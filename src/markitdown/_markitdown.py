@@ -1174,61 +1174,83 @@ class MarkItDown:
 
         return result
 
-    def _convert(
-        self, local_path: str, extensions: List[Union[str, None]], **kwargs
-    ) -> DocumentConverterResult:
-        error_trace = ""
-        for ext in extensions + [None]:  # Try last with no extension
-            for converter in self._page_converters:
-                _kwargs = copy.deepcopy(kwargs)
+    def _convert(self, local_path: str, extensions: List[Union[str, None]], **kwargs) -> DocumentConverterResult:
+    """
+    Attempt to convert a file using registered converters.
+    
+    Args:
+        local_path: Path to the file to convert
+        extensions: List of possible file extensions to try
+        **kwargs: Additional arguments to pass to converters
+        
+    Returns:
+        DocumentConverterResult
+        
+    Raises:
+        FileConversionException: If file conversion fails
+        UnsupportedFormatException: If no converter can handle the file
+    """
+    errors = []
+    
+    # Try each extension
+    for ext in extensions + [None]:  # Try last with no extension
+        ext_errors = []
+        
+        for converter in self._page_converters:
+            _kwargs = copy.deepcopy(kwargs)
 
-                # Overwrite file_extension appropriately
-                if ext is None:
-                    if "file_extension" in _kwargs:
-                        del _kwargs["file_extension"]
-                else:
-                    _kwargs.update({"file_extension": ext})
+            # Overwrite file_extension appropriately
+            if ext is None:
+                if "file_extension" in _kwargs:
+                    del _kwargs["file_extension"]
+            else:
+                _kwargs.update({"file_extension": ext})
 
-                # Copy any additional global options
-                if "llm_client" not in _kwargs and self._llm_client is not None:
-                    _kwargs["llm_client"] = self._llm_client
+            # Copy any additional global options
+            if "llm_client" not in _kwargs and self._llm_client is not None:
+                _kwargs["llm_client"] = self._llm_client
 
-                if "llm_model" not in _kwargs and self._llm_model is not None:
-                    _kwargs["llm_model"] = self._llm_model
+            if "llm_model" not in _kwargs and self._llm_model is not None:
+                _kwargs["llm_model"] = self._llm_model
 
-                # Add the list of converters for nested processing
-                _kwargs["_parent_converters"] = self._page_converters
+            # Add the list of converters for nested processing
+            _kwargs["_parent_converters"] = self._page_converters
 
-                if "style_map" not in _kwargs and self._style_map is not None:
-                    _kwargs["style_map"] = self._style_map
+            if "style_map" not in _kwargs and self._style_map is not None:
+                _kwargs["style_map"] = self._style_map
 
-                # If we hit an error log it and keep trying
-                try:
-                    res = converter.convert(local_path, **_kwargs)
-                except Exception:
-                    error_trace = ("\n\n" + traceback.format_exc()).strip()
-
+            try:
+                res = converter.convert(local_path, **_kwargs)
                 if res is not None:
                     # Normalize the content
                     res.text_content = "\n".join(
                         [line.rstrip() for line in re.split(r"\r?\n", res.text_content)]
                     )
                     res.text_content = re.sub(r"\n{3,}", "\n\n", res.text_content)
-
-                    # Todo
                     return res
+            except Exception as e:
+                error_trace = traceback.format_exc()
+                ext_errors.append(f"Converter {converter.__class__.__name__} failed: {str(e)}\n{error_trace}")
+        
+        if ext_errors:
+            errors.append(f"\nAttempted with extension '{ext}':")
+            errors.extend(ext_errors)
 
-        # If we got this far without success, report any exceptions
-        if len(error_trace) > 0:
-            raise FileConversionException(
-                f"Could not convert '{local_path}' to Markdown. File type was recognized as {extensions}. While converting the file, the following error was encountered:\n\n{error_trace}"
-            )
-
-        # Nothing can handle it!
-        raise UnsupportedFormatException(
-            f"Could not convert '{local_path}' to Markdown. The formats {extensions} are not supported."
+    # If we got this far, no converter succeeded
+    if errors:
+        error_details = "\n".join(errors)
+        raise FileConversionException(
+            f"Could not convert '{local_path}' to Markdown. "
+            f"File type was recognized as {extensions}. "
+            f"The following errors were encountered:\n{error_details}"
         )
 
+    # Nothing can handle it!
+    raise UnsupportedFormatException(
+        f"Could not convert '{local_path}' to Markdown. "
+        f"The formats {extensions} are not supported."
+    )
+    
     def _append_ext(self, extensions, ext):
         """Append a unique non-None, non-empty extension to a list of extensions."""
         if ext is None:
